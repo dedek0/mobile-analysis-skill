@@ -1,0 +1,164 @@
+# Mobile taint rules for Semgrep (mode: taint).
+#
+# These encode the highest-value source -> sink flows from
+# references/taint-analysis.md so the taint engine can produce reproducible,
+# citable traces instead of leaving the flow-finding entirely to an LLM's
+# reading of decompiled code. Each rule carries a `ref_id` (TNT-01..20) so a
+# trace can be cited in findings.jsonl exactly like a static reference.
+#
+# Usage:
+#   semgrep scan --config rules/semgrep/mobile-taint.yaml <target-dir> --json
+#   python3 scripts/taint_engine.py scan <target-dir> engagement-<slug>/
+#
+# These rules are a starting point, not an exhaustive checklist. They are
+# deliberately taint rules (real dataflow), not pattern matches, so a hit means
+# Semgrep found a path from the source expression to the sink argument — which
+# is exactly the "candidate" the taint-flow-analyst then verifies (sanitizer,
+# reachability, attacker model).
+#
+# Scope note: Semgrep taint is largely intraprocedural — it finds flows where the
+# source and sink live in the same function or direct call scope. Interprocedural,
+# lifecycle, aliasing, and reflection flows are FlowDroid's job (see
+# rules/flowdroid/README.md) plus the taint-flow-analyst's manual call-graph tracing.
+
+rules:
+  # --- Android: intent / deep-link / IPC data into dangerous sinks ----------
+
+  - id: android.taint.intent-to-webview
+    mode: taint
+    severity: WARNING
+    languages: [java, kotlin]
+    message: Intent-controlled data flows into WebView.loadUrl without an allow-list on the URL.
+    metadata:
+      ref_id: TNT-01
+      category: taint
+      platform: android
+    pattern-sources:
+      - pattern: (Intent $I).getStringExtra(...)
+      - pattern: (Intent $I).getData(...)
+      - pattern: (Intent $I).getDataString(...)
+      - pattern: (Intent $I).getParcelableExtra(...)
+      - pattern: (Intent $I).getSerializableExtra(...)
+    pattern-sinks:
+      - pattern: (WebView $W).loadUrl($X)
+      - pattern: (WebView $W).loadData($X, ...)
+
+  - id: android.taint.intent-to-exec
+    mode: taint
+    severity: ERROR
+    languages: [java, kotlin]
+    message: Intent-controlled data reaches an OS command (command injection).
+    metadata:
+      ref_id: TNT-01
+      category: taint
+      platform: android
+    pattern-sources:
+      - pattern: (Intent $I).getStringExtra(...)
+      - pattern: (Intent $I).getData(...)
+      - pattern: (Intent $I).getDataString(...)
+    pattern-sinks:
+      - pattern: Runtime.getRuntime().exec($X)
+      - pattern: Runtime.getRuntime().exec($X, ...)
+      - pattern: (ProcessBuilder $P).command($X, ...)
+
+  - id: android.taint.intent-to-sql
+    mode: taint
+    severity: ERROR
+    languages: [java, kotlin]
+    message: Intent-controlled data reaches a raw SQL sink (SQL injection).
+    metadata:
+      ref_id: TNT-03
+      category: taint
+      platform: android
+    pattern-sources:
+      - pattern: (Intent $I).getStringExtra(...)
+      - pattern: (Intent $I).getData(...)
+      - pattern: (Intent $I).getDataString(...)
+    pattern-sinks:
+      - pattern: $DB.rawQuery($Q, ...)
+      - pattern: $DB.execSQL($Q)
+
+  - id: android.taint.intent-to-file
+    mode: taint
+    severity: ERROR
+    languages: [java, kotlin]
+    message: Intent-controlled data reaches a file path (path traversal).
+    metadata:
+      ref_id: TNT-05
+      category: taint
+      platform: android
+    pattern-sources:
+      - pattern: (Intent $I).getStringExtra(...)
+      - pattern: (Intent $I).getData(...)
+      - pattern: (Intent $I).getDataString(...)
+    pattern-sinks:
+      - pattern: new File($X)
+      - pattern: new File($X, ...)
+
+  - id: android.taint.intent-redispatch
+    mode: taint
+    severity: WARNING
+    languages: [java, kotlin]
+    message: An Intent from input is re-dispatched (intent redirection / confused deputy).
+    metadata:
+      ref_id: TNT-02
+      category: taint
+      platform: android
+    pattern-sources:
+      - pattern: (Intent $I).getParcelableExtra(...)
+    pattern-sinks:
+      - pattern: $CTX.startActivity($X)
+      - pattern: $CTX.startActivity($X, ...)
+      - pattern: $CTX.sendBroadcast($X)
+
+  # --- iOS: URL handler / pasteboard ----------------------------------------
+
+  - id: ios.taint.url-to-wkwebview
+    mode: taint
+    severity: WARNING
+    languages: [swift]
+    message: A URL-handler parameter flows into WKWebView.load without validation.
+    metadata:
+      ref_id: TNT-01
+      category: taint
+      platform: ios
+    pattern-sources:
+      - pattern: |
+          func application(_ app: UIApplication, open url: URL, ...) -> Bool {
+            ...
+          }
+      - pattern: url
+    pattern-sinks:
+      - pattern: $W.load($REQ)
+
+  - id: ios.taint.pasteboard-to-sink
+    mode: taint
+    severity: WARNING
+    languages: [swift]
+    message: Pasteboard content flows into a processing sink without being treated as untrusted.
+    metadata:
+      ref_id: TNT-07
+      category: taint
+      platform: ios
+    pattern-sources:
+      - pattern: UIPasteboard.general.string
+    pattern-sinks:
+      - pattern: $S.load($X)
+
+  # --- React Native / Cordova -------------------------------------------------
+
+  - id: js.taint.linking-to-eval
+    mode: taint
+    severity: ERROR
+    languages: [javascript, typescript]
+    message: A deep-link URL from Linking flows into eval (remote code execution).
+    metadata:
+      ref_id: TNT-01
+      category: taint
+      platform: android
+    pattern-sources:
+      - pattern: Linking.getInitialURL()
+      - pattern: Linking.getLinkingURL()
+    pattern-sinks:
+      - pattern: eval($X)
+      - pattern: new Function($X)

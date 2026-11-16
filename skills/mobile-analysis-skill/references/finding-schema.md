@@ -1,0 +1,72 @@
+# Finding Schema
+
+Every specialist agent emits findings in this exact shape so the exploitation panel and report synthesizer can process them mechanically. Write findings as a JSON array (or JSON objects appended to a shared `findings.jsonl`) under the engagement's working directory (see `SKILL.md` for where that is). One object per candidate issue; do not pre-merge duplicates, the synthesizer dedupes later.
+
+```json
+{
+  "finding_id": "AND-WEB-002",
+  "title": "addJavascriptInterface bridge reachable from any loaded origin",
+  "agent": "webview-security-auditor",
+  "platform": "android",
+  "ref_ids": ["WEB-02", "TNT-06"],
+  "masvs": ["MASVS-PLATFORM-2"],
+  "cwe": "CWE-749",
+  "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:N",
+  "category": "webview",
+  "component": "com.example.app.WebActivity",
+  "attacker_model": "remote",
+  "source": "URL loaded into WebView without origin pinning",
+  "sink": "@JavascriptInterface method `getAuthToken()` exposed to JS",
+  "sanitizer_present": false,
+  "sanitizer_notes": "No origin allow-list on addJavascriptInterface; shouldOverrideUrlLoading does substring match only",
+  "evidence": [
+    {"type": "static", "detail": "jadx decompile shows WebActivity.java:142 addJavascriptInterface(bridge, \"Android\")", "artifact": "evidence/AND-WEB-002/jadx_snippet.txt"}
+  ],
+  "reproduction_static": "1. Decompile APK with jadx. 2. Inspect WebActivity.onCreate for addJavascriptInterface. 3. Inspect shouldOverrideUrlLoading for host validation.",
+  "reproduction_dynamic": null,
+  "severity_initial": "high",
+  "confidence_initial": "static-only",
+  "status": "candidate",
+  "final_severity": null,
+  "final_rating_reason": null,
+  "notes": ""
+}
+```
+
+## Field notes
+- `finding_id`: `<PLATFORM>-<DOMAIN>-<NNN>` (e.g. `AND-STO-014`, `IOS-CRY-003`, `BOTH-OAU-007`). `PLATFORM` is `AND`, `IOS`, or `BOTH`. `DOMAIN` is 2 to 6 uppercase letters or digits, and it is an open list: the domains used by the existing agents are valid, and a new one may be introduced if no existing domain fits. `NNN` is a 3-digit sequence per prefix, allocated within the engagement (see Allocation below). Keep the ID stable once assigned: downstream agents reference it.
+- Allocation: the orchestrating session assigns IDs deterministically by running `python3 scripts/orchestrate.py claim engagement-<slug>/ <PLATFORM>-<DOMAIN> --count N --agent <name>` before spawning the specialists, and passes each agent its assigned IDs in its prompt. `claim` reserves IDs atomically (a lock file plus `findings/reservations.jsonl`) so parallel agents never collide, and it never reuses a number, even for a finding that was later merged or rejected. If an agent is not given explicit IDs, it falls back to reading `findings.jsonl` for the next free number — in which case the orchestrating session resolves any collision by keeping the earlier record and re-numbering the later one, with a note in its `notes`.
+- `category`: a short lowercase string. Values used by the existing agents include `webview`, `storage`, `crypto`, `manifest`, `oauth`, `deeplink`, `clipboard`, `resilience`, `network`, `supply-chain`, and `logic`. A new value is valid if it describes the finding in one or two words.
+- `evidence[].type`: exactly `static`, `dynamic`, or `poc`. Never add a new type.
+- `ref_ids`: cite every matching ID from `taint-analysis.md`, `advanced-attacks.md`, `clipboard-webview-oauth.md`, `manifest-plist.md`, `storage-crypto.md`. Never invent a finding with no ref ID. If nothing in the reference set matches, say so explicitly and tag `ref_ids: ["CUSTOM"]` with justification in `notes`.
+- `masvs`: best-effort mapping to OWASP MASVS v2 control IDs (MASVS-STORAGE, MASVS-CRYPTO, MASVS-AUTH, MASVS-NETWORK, MASVS-PLATFORM, MASVS-CODE, MASVS-RESILIENCE, MASVS-PRIVACY). Leave `[]` if genuinely unmapped, don't force it.
+- `cwe`: the single most specific CWE for the root cause, in the form `CWE-<number>` (e.g. `CWE-312`, `CWE-927`). Required. If no CWE fits, use `CWE-1000` (the CWE view root for unclassified weaknesses) and say why in `notes`.
+- `cvss_vector`: a CVSS **3.1** base vector, `CVSS:3.1/AV:../AC:../PR:../UI:../S:../C:../I:../A:..`, for the attacker model and impact the finding describes. Required. The score is not stored: `scripts/cvss31.py` computes it from this vector, so the number in the report can always be reproduced. Use the attacker model to set `AV` (`remote` -> `N`, `other-app` -> `L` for IPC on the same device, `physical` -> `P`, `local-root` -> `L` with `PR:H` or `PR:L`, `none` -> the vector that matches the stated impact). The vector describes the attack, not the panel's rating: a vector never changes `status`.
+- `attacker_model`: one of `remote` (any server/network attacker), `other-app` (malicious app on same device, no root), `physical` (attacker has the unlocked/locked device briefly), `local-root` (rooted/jailbroken device or physical+root), `none` (not exploitable by any realistic attacker, informational only). This is the single most important field for the exploitation panel: it is what "Confirmed" is actually confirming reachability *by*.
+- `sanitizer_present` / `sanitizer_notes`: record what mitigation exists even if you believe it's inadequate; the skeptic agent checks this first.
+- `evidence`: append-only list. Static agents add `type: "static"` entries (file:line, decompiled snippet, grep hit). The dynamic-runtime-verifier adds `type: "dynamic"` entries (Frida hook output, logcat/idevicesyslog capture, pcap). The exploitation panel adds `type: "poc"` entries. Never delete evidence; corrections are new entries with `notes` explaining what superseded what.
+- `severity_initial` / `confidence_initial`: the specialist's own best guess (`critical|high|medium|low|info`, `static-only|dynamic-confirmed|theoretical`), set once by the specialist that created the finding and **never overwritten**: it's the audit trail of what the original call was, kept even after the panel rules differently.
+- `status`: `candidate` (fresh from a specialist) -> `under-review` (the orchestrating session sets this the moment it hands a finding to `exploit-verifier-prosecutor`) -> `confirmed` | `potential` | `informational` | `false-positive` (the panel's final call; see `severity-rating.md` for the gate each requires).
+- **Unreadable or missing decision fields.** If a record's `status` is missing, not in the enum, or cannot be read, the record is treated as `candidate` with `final_severity: null`, and the report says so in Appendix C. Never invent a status, and never write "not recoverable" or any other value outside the enum. `scripts/validate_findings.py` flags a `candidate` or `under-review` record that has a `final_severity`, and a `confirmed`, `potential` or `false-positive` record without one.
+- `final_severity` / `final_rating_reason`: **who writes these and when**: the prosecutor and skeptic agents never edit `findings.jsonl` directly (they're scoped to `Read`/`Grep`/`Glob`/`Write`-to-`exploitation/` only, by design, so they can't quietly short-circuit each other). Once every skeptic pass for a finding is in, the orchestrating session runs `python3 scripts/orchestrate.py decide engagement-<slug>/ <finding_id>` (optionally with `--severity`), which reads the prosecutor's and skeptics' structured verdict files, applies the decision rule in `severity-rating.md`, and writes `status`, `final_severity` (`critical|high|medium|low|info`, independent of `severity_initial`), and a one-line `final_rating_reason` into this record. `SKILL.md`'s Phase 4 says so explicitly. `report-synthesizer` reads `final_severity`/`status` as the authoritative rating; it falls back to `severity_initial` only for findings that skipped the full panel (routed straight to `informational` per `SKILL.md`'s low-severity shortcut).
+
+## Where findings live
+Use a per-engagement working directory (the skill sets this up, typically `./engagement-<slug>/`) with:
+```
+engagement-<slug>/
+├── scope.md                 # authorization record (see SKILL.md Step 0)
+├── target-profile.md        # recon-triage output
+├── findings/
+│   ├── findings.jsonl       # one finding object per line, append-only
+│   └── evidence/<finding_id>/...
+├── exploitation/
+│   ├── <finding_id>.md                   # consolidated transcript: prosecutor case + skeptic verdicts + decision
+│   ├── <finding_id>.prosecutor.json      # machine-readable prosecutor verdict (read by scripts/orchestrate.py decide)
+│   └── <finding_id>.skeptic-<label>.json  # machine-readable skeptic verdicts, one per instance
+└── report/
+    ├── final-report.en.md
+    ├── final-report.en.html
+    ├── final-report.pt-BR.md
+    └── final-report.pt-BR.html
+```
+Agents append to `findings.jsonl` rather than rewriting it, so parallel specialist runs never clobber each other. The report-synthesizer is the only agent that reads the whole file to dedupe and roll up.

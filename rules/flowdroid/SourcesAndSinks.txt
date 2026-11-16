@@ -1,0 +1,38 @@
+# FlowDroid sources and sinks — starting point.
+#
+# FlowDroid reads this file to know which methods are taint sources/sinks.
+# Format: `<jvm-signature> -> _SOURCE_|_SINK_|_BOTH_|_NONE_`, one per line.
+# This is a minimal, common set, not an exhaustive list — extend it per target.
+#
+# See README.md in this directory for how to set up and run FlowDroid.
+
+# --- Android sources -------------------------------------------------------
+<android.app.Activity: android.content.Intent getIntent()> -> _SOURCE_
+<android.content.Intent: java.lang.String getStringExtra(java.lang.String)> -> _SOURCE_
+<android.content.Intent: android.net.Uri getData()> -> _SOURCE_
+<android.content.Intent: java.lang.String getDataString()> -> _SOURCE_
+<android.content.Intent: android.os.Bundle getExtras()> -> _SOURCE_
+<android.content.Intent: java.io.Serializable getSerializableExtra(java.lang.String)> -> _SOURCE_
+<android.content.Intent: android.os.Parcelable getParcelableExtra(java.lang.String)> -> _SOURCE_
+<android.content.ClipboardManager: android.content.ClipData getPrimaryClip()> -> _SOURCE_
+
+# --- Android injection / flow sinks ----------------------------------------
+<android.webkit.WebView: void loadUrl(java.lang.String)> -> _SINK_
+<android.webkit.WebView: void loadData(java.lang.String,java.lang.String,java.lang.String)> -> _SINK_
+<android.webkit.WebView: void loadDataWithBaseURL(java.lang.String,java.lang.String,java.lang.String,java.lang.String,java.lang.String)> -> _SINK_
+<java.lang.Runtime: java.lang.Process exec(java.lang.String)> -> _SINK_
+<java.lang.Runtime: java.lang.Process exec(java.lang.String,java.lang.String[])> -> _SINK_
+<java.lang.ProcessBuilder: void <init>(java.lang.String[])> -> _SINK_
+<java.lang.ProcessBuilder: void <init>(java.util.List)> -> _SINK_
+<android.database.sqlite.SQLiteDatabase: android.database.Cursor rawQuery(java.lang.String,java.lang.String[])> -> _SINK_
+<android.database.sqlite.SQLiteDatabase: void execSQL(java.lang.String)> -> _SINK_
+<java.io.File: void <init>(java.lang.String)> -> _SINK_
+<java.io.FileOutputStream: void <init>(java.lang.String)> -> _SINK_
+<android.content.Context: void startActivity(android.content.Intent)> -> _SINK_
+<android.content.Context: void sendBroadcast(android.content.Intent)> -> _SINK_
+
+# --- Leak sinks (class B: sensitive data out) -------------------------------
+<android.util.Log: int d(java.lang.String,java.lang.String)> -> _SINK_
+<android.util.Log: int i(java.lang.String,java.lang.String)> -> _SINK_
+<android.util.Log: int e(java.lang.String,java.lang.String)> -> _SINK_
+<android.util.Log: int w(java.lang.String,java.lang.String)> -> _SINK_
